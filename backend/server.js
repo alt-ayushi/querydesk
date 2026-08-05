@@ -44,6 +44,9 @@ app.use((req, res, next) => {
 });
 
 // Routes
+app.get('/', (req, res) => {
+  res.json({ message: 'QueryDesk Backend API is running smoothly 🚀', status: 'online' });
+});
 app.use('/api', apiRoutes);
 
 // Global Error Handler
