@@ -1,0 +1,23 @@
+# Environment variables
+.env
+*.env.local
+
+# Node modules
+node_modules/
+
+# WhatsApp Auth directory
+auth_info_baileys/
+
+# Logs & temp files
+*.log
+scratch/
+whatsapp_login_output*.txt
+ws_observer_output*.txt
+gateway_output*.txt
+channel_formatted.js
+test_ws.js
+
+# Build outputs
+dist/
+build/
+.DS_Store
