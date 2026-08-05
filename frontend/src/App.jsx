@@ -7,7 +7,7 @@ import TelegramChat from './components/TelegramChat';
 import Onboarding from './components/Onboarding';
 import SettingsChannels from './components/SettingsChannels';
 
-const BACKEND_URL = 'http://localhost:5000';
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:5000';
 
 function App() {
   const [token, setToken] = useState(localStorage.getItem('token') || '');
