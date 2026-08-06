@@ -47,8 +47,8 @@ router.post('/channels/:channel/disconnect', protect, disconnectChannel);
 router.get('/status', protect, getStatus);
 router.get('/media', protect, getMedia);
 
-// ── Inbound Webhooks (No auth — called by OpenClaw gateway) ──────────────────
+// ── Inbound Webhooks (No auth — called by Telegram / OpenClaw) ──────────────────
 router.post('/channels/whatsapp/webhook', handleWhatsAppWebhook);
-router.post('/channels/telegram/webhook', handleTelegramWebhook);
+router.post('/channels/telegram/webhook/:userId?', handleTelegramWebhook);
 
 export default router;

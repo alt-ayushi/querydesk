@@ -302,6 +302,83 @@ class TelegramService {
     return savedMsg;
   }
 
+  /**
+   * Decoupled Webhook Update Processor
+   * Normalizes incoming Telegram update, resolves userId via DB ChannelSession if needed,
+   * performs idempotency check using update_id & message_id, and invokes message handlers.
+   */
+  async processWebhookUpdate(update, explicitUserId = null) {
+    if (!update) return;
+    const msg = update.message || update.edited_message;
+    if (!msg) return;
+
+    const peerId = String(msg.chat.id);
+    const providerMessageId = String(msg.message_id);
+    const timestamp = msg.date ? msg.date * 1000 : Date.now();
+    const contactName = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ') || msg.from?.username || '';
+
+    // Idempotency check: Deduplicate by providerMessageId in MessageRepository
+    if (providerMessageId) {
+      const existing = await MessageRepository.findByProviderMessageId(providerMessageId);
+      if (existing) {
+        console.log(`[Telegram Direct] Duplicate message ${providerMessageId} skipped.`);
+        return existing;
+      }
+    }
+
+    // Resolve userId from ChannelSession in DB if explicitUserId is missing
+    let resolvedUserId = explicitUserId;
+    let botToken = null;
+
+    try {
+      if (!resolvedUserId) {
+        const activeSessions = await ChannelSession.find({ channel: 'telegram', connected: true });
+        if (activeSessions && activeSessions.length > 0) {
+          resolvedUserId = activeSessions[0].userId;
+          botToken = activeSessions[0].botToken ? decrypt(activeSessions[0].botToken) : null;
+        }
+      } else {
+        const session = await ChannelSession.findOne({ userId: resolvedUserId, channel: 'telegram', connected: true });
+        if (session && session.botToken) {
+          botToken = decrypt(session.botToken);
+        }
+      }
+    } catch (dbErr) {
+      console.warn('[Telegram Direct] DB Session lookup warning:', dbErr.message);
+    }
+
+    if (!resolvedUserId) {
+      console.warn(`[Telegram Direct] No connected user session found for peer ${peerId}. Processing with fallback.`);
+    }
+
+    // Process Telegram Media vs Text (Additive)
+    if (msg.photo && Array.isArray(msg.photo) && msg.photo.length > 0) {
+      const caption = msg.caption || '';
+      return await this.handleIncomingPhotoMessage(
+        peerId,
+        msg.photo,
+        caption,
+        providerMessageId,
+        timestamp,
+        contactName,
+        true,
+        resolvedUserId,
+        botToken
+      );
+    } else if (msg.text) {
+      console.log(`[Telegram Direct] Processing message from ${contactName} (${peerId}): "${msg.text.slice(0, 60)}"`);
+      return await this.handleIncomingMessage(
+        peerId,
+        msg.text,
+        providerMessageId,
+        timestamp,
+        contactName,
+        true,
+        resolvedUserId
+      );
+    }
+  }
+
   // ── Adaptive Listener (Webhook or Polling) ──────────────────────────────────
   async initTelegramListeners() {
     console.log('[Telegram Direct] Initializing direct Telegram listeners...');
@@ -313,14 +390,23 @@ class TelegramService {
         if (!botToken) continue;
 
         const appUrl = process.env.APP_URL;
-        const isPublicUrl = appUrl && !appUrl.includes('localhost') && !appUrl.includes('127.0.0.1');
+        const isHttpsUrl = appUrl && appUrl.startsWith('https://') && !appUrl.includes('localhost') && !appUrl.includes('127.0.0.1');
 
-        if (isPublicUrl) {
-          // Register Webhook
-          const webhookUrl = `${appUrl}/api/channels/telegram/webhook`;
-          console.log(`[Telegram Direct] Setting webhook for user ${session.userId}: ${webhookUrl}`);
-          await axios.post(`https://api.telegram.org/bot${botToken}/setWebhook`, { url: webhookUrl });
-        } else if (process.env.TELEGRAM_POLLING === 'true') {
+        if (isHttpsUrl) {
+          // Register Webhook with user-scoped path
+          const webhookUrl = `${appUrl.replace(/\/+$/, '')}/api/channels/telegram/webhook/${session.userId}`;
+          console.log(`[Telegram Direct] Registering webhook for user ${session.userId}: ${webhookUrl}`);
+          try {
+            await axios.post(`https://api.telegram.org/bot${botToken}/setWebhook`, { url: webhookUrl }, { timeout: 10000 });
+            console.log(`[Telegram Direct] Webhook registered successfully for user ${session.userId}`);
+          } catch (webhookErr) {
+            console.warn(`[Telegram Direct] Webhook registration warning for user ${session.userId}: ${webhookErr.message}`);
+          }
+        } else {
+          console.log(`[Telegram Direct] APP_URL is non-HTTPS or localhost (${appUrl || 'not set'}). Skipping webhook setWebhook.`);
+        }
+
+        if (process.env.TELEGRAM_POLLING === 'true') {
           // Start Long Polling Fallback for local development
           this.startPollingForUser(session.userId, botToken);
         }
@@ -330,11 +416,21 @@ class TelegramService {
     }
   }
 
-  startPollingForUser(userId, botToken) {
+  async startPollingForUser(userId, botToken) {
     if (pollingTimers.has(String(userId))) return;
 
     console.log(`[Telegram Direct] Starting long-polling listener for user ${userId}`);
+
+    // Delete active webhook first so Telegram allows getUpdates long-polling
+    try {
+      await axios.post(`https://api.telegram.org/bot${botToken}/deleteWebhook`, { drop_pending_updates: false }, { timeout: 10000 });
+      console.log(`[Telegram Direct] Cleared active webhook for polling (user ${userId})`);
+    } catch (delErr) {
+      /* ignore non-critical deleteWebhook error */
+    }
+
     let offset = 0;
+    let nextDelay = 2000;
 
     const poll = async () => {
       try {
@@ -343,46 +439,24 @@ class TelegramService {
         });
 
         if (res.data && res.data.ok && Array.isArray(res.data.result)) {
+          nextDelay = 2000;
           for (const update of res.data.result) {
             offset = update.update_id + 1;
-            const msg = update.message;
-            if (msg) {
-              const peerId = String(msg.chat.id);
-              const contactName = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ') || msg.from?.username || '';
-
-              if (msg.photo && Array.isArray(msg.photo) && msg.photo.length > 0) {
-                const caption = msg.caption || '';
-                await this.handleIncomingPhotoMessage(
-                  peerId,
-                  msg.photo,
-                  caption,
-                  msg.message_id,
-                  msg.date ? msg.date * 1000 : Date.now(),
-                  contactName,
-                  true,
-                  userId,
-                  botToken
-                );
-              } else if (msg.text) {
-                console.log('[TRACE 1/9] Telegram update received:', msg.text);
-                await this.handleIncomingMessage(
-                  peerId,
-                  msg.text,
-                  msg.message_id,
-                  msg.date ? msg.date * 1000 : Date.now(),
-                  contactName,
-                  true,
-                  userId
-                );
-              }
-            }
+            await this.processWebhookUpdate(update, userId);
           }
         }
       } catch (err) {
-        console.error('[DEBUG] Polling error:', err.response?.data?.description || err.message);
+        const desc = err.response?.data?.description || err.message;
+        if (desc && desc.includes('Conflict')) {
+          console.warn(`[Telegram Direct] Polling conflict for user ${userId}: Another instance or webhook active. Retrying in 15s...`);
+          nextDelay = 15000;
+        } else {
+          console.error('[Telegram Direct] Polling error:', desc);
+          nextDelay = 5000;
+        }
       } finally {
         if (pollingTimers.has(String(userId))) {
-          const timer = setTimeout(poll, 2000);
+          const timer = setTimeout(poll, nextDelay);
           pollingTimers.set(String(userId), timer);
         }
       }

@@ -144,27 +144,58 @@ export const handleWhatsAppWebhook = async (req, res) => {
 };
 
 /**
- * POST /api/channels/telegram/webhook
- * Called by OpenClaw when a Telegram message is received.
+ * POST /api/channels/telegram/webhook/:userId?
+ * Dual-route webhook handler for Telegram Bot API & OpenClaw legacy format.
+ * Validates update, returns HTTP 200 immediately, and delegates processing asynchronously to TelegramService.
  */
 export const handleTelegramWebhook = async (req, res) => {
   try {
-    const { from, body, id: providerMessageId, timestamp, firstName, lastName, username, fromMe } = req.body;
+    const explicitUserId = req.params.userId || req.query.userId || req.body?.userId || null;
+    const body = req.body || {};
 
-    if (!from || !body) {
-      return res.status(400).json({ error: 'from and body are required' });
+    console.log('[Telegram Webhook] Received payload for userId:', explicitUserId || 'DB session lookup');
+
+    // 1. Legacy OpenClaw Format Support
+    if (body.from && body.body) {
+      if (body.fromMe) return res.json({ success: true, skipped: 'fromMe' });
+      const contactName = [body.firstName, body.lastName].filter(Boolean).join(' ') || body.username || '';
+
+      // Return HTTP 200 immediately
+      res.json({ success: true });
+
+      // Process asynchronously
+      TelegramService.handleIncomingMessage(
+        body.from,
+        body.body,
+        body.id,
+        body.timestamp,
+        contactName,
+        true,
+        explicitUserId
+      ).catch(err => console.error('[Webhook/TG Legacy] Processing error:', err.message));
+      return;
     }
 
-    if (fromMe) return res.json({ success: true, skipped: 'fromMe' });
+    // 2. Standard Telegram Bot API Update Support
+    const update = body;
+    const msg = update.message || update.edited_message;
 
-    const contactName = [firstName, lastName].filter(Boolean).join(' ') || username || '';
+    if (!msg) {
+      // Return HTTP 200 for non-message update types (e.g. inline_query, my_chat_member) to avoid retries
+      return res.json({ success: true, skipped: 'Non-message update type' });
+    }
 
-    TelegramService.handleIncomingMessage(from, body, providerMessageId, timestamp, contactName, true)
-      .catch(err => console.error('[Webhook/TG] Handler error:', err.message));
-
+    // Return HTTP 200 immediately before AI / DB processing to prevent Telegram webhook timeout retries
     res.json({ success: true });
+
+    // Delegate processing asynchronously to TelegramService payload handler
+    TelegramService.processWebhookUpdate(update, explicitUserId)
+      .catch(err => console.error('[Webhook/TG] Async processing error:', err.message));
+
   } catch (error) {
-    console.error('[Channel] telegram webhook error:', error.message);
-    res.status(500).json({ error: error.message });
+    console.error('[Channel] Telegram webhook error:', error.message);
+    if (!res.headersSent) {
+      res.json({ success: true, warning: 'Error caught during validation' });
+    }
   }
 };
