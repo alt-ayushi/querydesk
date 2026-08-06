@@ -417,9 +417,11 @@ class TelegramService {
   }
 
   async startPollingForUser(userId, botToken) {
-    if (pollingTimers.has(String(userId))) return;
+    if (!botToken) return;
+    const pollingKey = String(botToken);
+    if (pollingTimers.has(pollingKey)) return;
 
-    console.log(`[Telegram Direct] Starting long-polling listener for user ${userId}`);
+    console.log(`[Telegram Direct] Starting single long-polling listener for bot (user ${userId})`);
 
     // Delete active webhook first so Telegram allows getUpdates long-polling
     try {
@@ -448,30 +450,39 @@ class TelegramService {
       } catch (err) {
         const desc = err.response?.data?.description || err.message;
         if (desc && desc.includes('Conflict')) {
-          console.warn(`[Telegram Direct] Polling conflict for user ${userId}: Another instance or webhook active. Retrying in 15s...`);
+          console.warn(`[Telegram Direct] Polling conflict: Another instance or webhook active. Retrying in 15s...`);
           nextDelay = 15000;
         } else {
           console.error('[Telegram Direct] Polling error:', desc);
           nextDelay = 5000;
         }
       } finally {
-        if (pollingTimers.has(String(userId))) {
+        if (pollingTimers.has(pollingKey)) {
           const timer = setTimeout(poll, nextDelay);
-          pollingTimers.set(String(userId), timer);
+          pollingTimers.set(pollingKey, timer);
         }
       }
     };
 
     const timer = setTimeout(poll, 500);
-    pollingTimers.set(String(userId), timer);
+    pollingTimers.set(pollingKey, timer);
   }
 
-  stopPollingForUser(userId) {
-    const timer = pollingTimers.get(String(userId));
-    if (timer) {
-      clearTimeout(timer);
-      pollingTimers.delete(String(userId));
-      console.log(`[Telegram Direct] Stopped polling listener for user ${userId}`);
+  stopPollingForUser(userId, botToken = null) {
+    if (botToken) {
+      const timer = pollingTimers.get(String(botToken));
+      if (timer) {
+        clearTimeout(timer);
+        pollingTimers.delete(String(botToken));
+        console.log(`[Telegram Direct] Stopped polling listener for bot`);
+      }
+    } else {
+      // Clear all timers as fallback
+      for (const [key, timer] of pollingTimers.entries()) {
+        clearTimeout(timer);
+        pollingTimers.delete(key);
+      }
+      console.log(`[Telegram Direct] Cleared polling listeners`);
     }
   }
 }
