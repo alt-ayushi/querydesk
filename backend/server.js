@@ -27,7 +27,11 @@ const app = express();
 const server = http.createServer(app);
 
 // Middlewares
-app.use(cors());
+const allowedOrigins = process.env.CLIENT_URL ? process.env.CLIENT_URL.split(',') : '*';
+app.use(cors({
+  origin: allowedOrigins,
+  credentials: true
+}));
 
 // Route-aware JSON parser: 50mb payload limit for image chat endpoint, standard limit for all other routes
 app.use((req, res, next) => {

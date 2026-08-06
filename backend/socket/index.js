@@ -8,10 +8,12 @@ let ioInstance = null;
  * @param {HttpServer} server - The HTTP server instance
  */
 export function initSocketIO(server) {
+  const allowedOrigins = process.env.CLIENT_URL ? process.env.CLIENT_URL.split(',') : '*';
   ioInstance = new Server(server, {
     cors: {
-      origin: '*', // Allow all origins for dev simplicity
-      methods: ['GET', 'POST']
+      origin: allowedOrigins,
+      methods: ['GET', 'POST'],
+      credentials: true
     }
   });
 
