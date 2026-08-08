@@ -355,10 +355,6 @@ export async function connectTelegramBot(userId, token) {
     // Update global active bot username
     global.defaultTelegramBotUsername = botInfo.username;
 
-    // Trigger direct listener initialization if active
-    const TelegramService = (await import('./TelegramService.js')).default;
-    TelegramService.initTelegramListeners().catch(err => console.error('[TG Direct Listener] Init error:', err.message));
-
     return botInfo;
   } catch (err) {
     console.error(`[TG Direct Connection] Validation failed:`, err.message);

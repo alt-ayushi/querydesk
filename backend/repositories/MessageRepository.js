@@ -11,8 +11,12 @@ class MessageRepository {
       .limit(limit);
   }
 
-  async findByProviderMessageId(providerMessageId) {
-    return Message.findOne({ providerMessageId });
+  async findByProviderMessageId(providerMessageId, channel = null, conversationId = null) {
+    if (!providerMessageId) return null;
+    const query = { providerMessageId: String(providerMessageId) };
+    if (channel) query.channel = channel;
+    if (conversationId) query.conversationId = conversationId;
+    return Message.findOne(query);
   }
 
   async create(messageData) {

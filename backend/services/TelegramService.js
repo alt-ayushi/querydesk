@@ -12,6 +12,7 @@ import MessageRepository from '../repositories/MessageRepository.js';
 import ChannelSession from '../models/ChannelSession.js';
 import { decrypt } from './encryptionService.js';
 import { getSocketIO } from '../socket/index.js';
+import { formatAIResponse } from '../utils/formatResponse.js';
 
 let pollingTimers = new Map();
 
@@ -60,7 +61,7 @@ export async function sendTelegramMessageDirect(botToken, chatId, text) {
 class TelegramService {
 
   // ── Dashboard → Telegram Mobile ────────────────────────────────────────────
-  async sendMessage(peerId, text, conversationId, userId) {
+  async sendMessage(peerId, text, conversationId, userId, overrideBotToken = null) {
     console.log(`[Telegram Direct] Dashboard → mobile: ${peerId}, user: ${userId}`);
     const io = getSocketIO();
 
@@ -87,19 +88,37 @@ class TelegramService {
     }
 
     try {
-      // Find connected Telegram channel session for this user
-      const session = await ChannelSession.findOne({ userId, channel: 'telegram', connected: true });
-      if (!session || !session.botToken) {
-        throw new Error('Telegram bot is not connected for this user.');
+      let botToken = overrideBotToken;
+      if (!botToken) {
+        // Extract botUsername from scoped peerId if present (e.g. "5904904075_QueryDeskk_bot" -> "QueryDeskk_bot")
+        const parts = String(peerId).split('_');
+        const embeddedBotUsername = parts.length > 1 ? parts.slice(1).join('_') : null;
+
+        if (embeddedBotUsername) {
+          const session = await ChannelSession.findOne({ userId, channel: 'telegram', botUsername: embeddedBotUsername, connected: true });
+          if (session && session.botToken) {
+            botToken = decrypt(session.botToken);
+          }
+        }
+
+        if (!botToken) {
+          const session = await ChannelSession.findOne({ userId, channel: 'telegram', connected: true }).sort({ updatedAt: -1 });
+          if (!session || !session.botToken) {
+            throw new Error('Telegram bot is not connected for this user.');
+          }
+          botToken = decrypt(session.botToken);
+        }
       }
 
-      const botToken = decrypt(session.botToken);
       if (!botToken) {
-        throw new Error('Failed to decrypt Telegram bot token.');
+        throw new Error('Failed to decrypt or find Telegram bot token.');
       }
+
+      // Extract raw Telegram numeric chat_id from peerId (e.g. "5904904075_QueryDeskk_bot" -> "5904904075")
+      const rawTelegramChatId = String(peerId).split('_')[0].split(':')[0];
 
       // Send directly via Telegram Bot API
-      const result = await sendTelegramMessageDirect(botToken, peerId, text);
+      const result = await sendTelegramMessageDirect(botToken, rawTelegramChatId, text);
 
       savedMsg.status = 'sent';
       if (result && result.message_id) {
@@ -122,7 +141,7 @@ class TelegramService {
   }
 
   // ── Inbound Telegram → AI → Outbound Direct Reply ─────────────────────────
-  async handleIncomingMessage(peerId, text, providerMessageId, timestamp, contactName = '', isUser = true, userId = null) {
+  async handleIncomingMessage(peerId, text, providerMessageId, timestamp, contactName = '', isUser = true, userId = null, botToken = null) {
     const io = getSocketIO();
     console.log('[TRACE 2/9] handleIncomingMessage entered');
     console.log(`[Telegram Direct] Incoming [isUser=${isUser}] from ${peerId}: "${text.slice(0, 80)}" for user ${userId}`);
@@ -142,9 +161,9 @@ class TelegramService {
 
     // ── 2. Deduplicate ────────────────────────────────────────────────────────
     if (providerMessageId) {
-      const existing = await MessageRepository.findByProviderMessageId(String(providerMessageId));
+      const existing = await MessageRepository.findByProviderMessageId(String(providerMessageId), 'telegram', conversation._id);
       if (existing) {
-        console.log(`[Telegram Direct] Duplicate message ${providerMessageId}, skipping`);
+        console.log(`[Telegram Direct] Duplicate message ${providerMessageId} in conv ${conversation._id}, skipping`);
         return existing;
       }
     }
@@ -192,10 +211,11 @@ class TelegramService {
           });
 
           if (aiResponse) {
-            console.log('[TRACE 7/9] Mistral response received:', aiResponse.slice(0, 60));
-            console.log(`[Telegram Direct] AI response generated: "${aiResponse.slice(0, 50)}..."`);
-            // Deliver response text via channel transport
-            await this.sendMessage(peerId, aiResponse, conversation._id, finalUserId);
+            const formattedResponse = formatAIResponse(aiResponse, 'telegram');
+            console.log('[TRACE 7/9] Formatted response received:', formattedResponse.slice(0, 60));
+            console.log(`[Telegram Direct] AI response generated: "${formattedResponse.slice(0, 50)}..."`);
+            // Deliver response text via channel transport using exact botToken
+            await this.sendMessage(peerId, formattedResponse, conversation._id, finalUserId, botToken);
           }
         } catch (err) {
           console.error('[Telegram Direct] AI automatic responder error:', err.message);
@@ -223,7 +243,7 @@ class TelegramService {
     const finalUserId = userId || conversation.userId;
 
     if (providerMessageId) {
-      const existing = await MessageRepository.findByProviderMessageId(String(providerMessageId));
+      const existing = await MessageRepository.findByProviderMessageId(String(providerMessageId), 'telegram', conversation._id);
       if (existing) return existing;
     }
 
@@ -288,7 +308,8 @@ class TelegramService {
           }
 
           if (aiResponse) {
-            await this.sendMessage(peerId, aiResponse, conversation._id, finalUserId);
+            const formattedResponse = formatAIResponse(aiResponse, 'telegram');
+            await this.sendMessage(peerId, formattedResponse, conversation._id, finalUserId, botToken);
           }
         } catch (err) {
           console.error('[Telegram Direct] Vision AI error:', err.message);
@@ -307,40 +328,37 @@ class TelegramService {
    * Normalizes incoming Telegram update, resolves userId via DB ChannelSession if needed,
    * performs idempotency check using update_id & message_id, and invokes message handlers.
    */
-  async processWebhookUpdate(update, explicitUserId = null) {
+  async processWebhookUpdate(update, explicitUserId = null, explicitBotToken = null) {
     if (!update) return;
     const msg = update.message || update.edited_message;
     if (!msg) return;
 
-    const peerId = String(msg.chat.id);
+    const rawChatId = String(msg.chat.id);
     const providerMessageId = String(msg.message_id);
     const timestamp = msg.date ? msg.date * 1000 : Date.now();
-    const contactName = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ') || msg.from?.username || '';
 
-    // Idempotency check: Deduplicate by providerMessageId in MessageRepository
-    if (providerMessageId) {
-      const existing = await MessageRepository.findByProviderMessageId(providerMessageId);
-      if (existing) {
-        console.log(`[Telegram Direct] Duplicate message ${providerMessageId} skipped.`);
-        return existing;
-      }
-    }
-
-    // Resolve userId from ChannelSession in DB if explicitUserId is missing
+    // Resolve userId & botToken from ChannelSession in DB if explicitUserId / explicitBotToken missing
     let resolvedUserId = explicitUserId;
-    let botToken = null;
+    let botToken = explicitBotToken;
+    let botUsername = '';
 
     try {
+      if (botToken) {
+        const activeSessions = await ChannelSession.find({ channel: 'telegram', connected: true }).sort({ updatedAt: -1 });
+        for (const s of activeSessions) {
+          if (s.botToken && decrypt(s.botToken) === botToken) {
+            resolvedUserId = s.userId;
+            botUsername = s.botUsername || '';
+            break;
+          }
+        }
+      }
       if (!resolvedUserId) {
-        const activeSessions = await ChannelSession.find({ channel: 'telegram', connected: true });
+        const activeSessions = await ChannelSession.find({ channel: 'telegram', connected: true }).sort({ updatedAt: -1 });
         if (activeSessions && activeSessions.length > 0) {
           resolvedUserId = activeSessions[0].userId;
           botToken = activeSessions[0].botToken ? decrypt(activeSessions[0].botToken) : null;
-        }
-      } else {
-        const session = await ChannelSession.findOne({ userId: resolvedUserId, channel: 'telegram', connected: true });
-        if (session && session.botToken) {
-          botToken = decrypt(session.botToken);
+          botUsername = activeSessions[0].botUsername || '';
         }
       }
     } catch (dbErr) {
@@ -348,8 +366,14 @@ class TelegramService {
     }
 
     if (!resolvedUserId) {
-      console.warn(`[Telegram Direct] No connected user session found for peer ${peerId}. Processing with fallback.`);
+      console.warn(`[Telegram Direct] No connected user session found for peer ${rawChatId}. Processing with fallback.`);
     }
+
+    // Construct bot-scoped peerId and contactName so different Telegram bots maintain isolated chats in dashboard
+    const cleanBotUser = botUsername ? botUsername.replace(/^@/, '') : '';
+    const peerId = cleanBotUser ? `${rawChatId}_${cleanBotUser}` : rawChatId;
+    const baseContactName = [msg.from?.first_name, msg.from?.last_name].filter(Boolean).join(' ') || msg.from?.username || '';
+    const contactName = (baseContactName && cleanBotUser) ? `${baseContactName} (@${cleanBotUser})` : baseContactName;
 
     // Process Telegram Media vs Text (Additive)
     if (msg.photo && Array.isArray(msg.photo) && msg.photo.length > 0) {
@@ -366,7 +390,7 @@ class TelegramService {
         botToken
       );
     } else if (msg.text) {
-      console.log(`[Telegram Direct] Processing message from ${contactName} (${peerId}): "${msg.text.slice(0, 60)}"`);
+      console.log(`[Telegram Direct] Processing message from ${contactName} (${peerId}): "${msg.text.slice(0, 60)}" for user ${resolvedUserId}`);
       return await this.handleIncomingMessage(
         peerId,
         msg.text,
@@ -374,7 +398,8 @@ class TelegramService {
         timestamp,
         contactName,
         true,
-        resolvedUserId
+        resolvedUserId,
+        botToken
       );
     }
   }
@@ -383,17 +408,26 @@ class TelegramService {
   async initTelegramListeners() {
     console.log('[Telegram Direct] Initializing direct Telegram listeners...');
     try {
-      const activeSessions = await ChannelSession.find({ channel: 'telegram', connected: true });
+      const activeSessions = await ChannelSession.find({ channel: 'telegram', connected: true }).sort({ updatedAt: -1 });
+      
+      // Deduplicate active sessions by botToken to avoid spawning competing polling loops for the same bot
+      const uniqueBotSessions = new Map();
       for (const session of activeSessions) {
         if (!session.botToken) continue;
         const botToken = decrypt(session.botToken);
         if (!botToken) continue;
+        if (!uniqueBotSessions.has(botToken)) {
+          uniqueBotSessions.set(botToken, session);
+        }
+      }
 
+      for (const [botToken, session] of uniqueBotSessions.entries()) {
         const appUrl = process.env.APP_URL;
         const isHttpsUrl = appUrl && appUrl.startsWith('https://') && !appUrl.includes('localhost') && !appUrl.includes('127.0.0.1');
 
-        if (isHttpsUrl) {
+        if (isHttpsUrl && process.env.TELEGRAM_POLLING !== 'true') {
           // Register Webhook with user-scoped path
+          this.stopPollingForUser(session.userId, botToken);
           const webhookUrl = `${appUrl.replace(/\/+$/, '')}/api/channels/telegram/webhook/${session.userId}`;
           console.log(`[Telegram Direct] Registering webhook for user ${session.userId}: ${webhookUrl}`);
           try {
@@ -403,11 +437,7 @@ class TelegramService {
             console.warn(`[Telegram Direct] Webhook registration warning for user ${session.userId}: ${webhookErr.message}`);
           }
         } else {
-          console.log(`[Telegram Direct] APP_URL is non-HTTPS or localhost (${appUrl || 'not set'}). Skipping webhook setWebhook.`);
-        }
-
-        if (process.env.TELEGRAM_POLLING === 'true') {
-          // Start Long Polling Fallback for local development
+          console.log(`[Telegram Direct] Operating in polling mode for bot (@${session.botUsername || session.userId})`);
           this.startPollingForUser(session.userId, botToken);
         }
       }
@@ -419,7 +449,11 @@ class TelegramService {
   async startPollingForUser(userId, botToken) {
     if (!botToken) return;
     const pollingKey = String(botToken);
-    if (pollingTimers.has(pollingKey)) return;
+
+    if (pollingTimers.has(pollingKey)) {
+      console.log(`[Telegram Direct] Replacing existing polling timer for bot token`);
+      this.stopPollingForUser(userId, botToken);
+    }
 
     console.log(`[Telegram Direct] Starting single long-polling listener for bot (user ${userId})`);
 
@@ -432,7 +466,7 @@ class TelegramService {
     }
 
     let offset = 0;
-    let nextDelay = 2000;
+    let nextDelay = 1500;
 
     const poll = async () => {
       try {
@@ -441,20 +475,21 @@ class TelegramService {
         });
 
         if (res.data && res.data.ok && Array.isArray(res.data.result)) {
-          nextDelay = 2000;
+          nextDelay = 1500;
           for (const update of res.data.result) {
             offset = update.update_id + 1;
-            await this.processWebhookUpdate(update, userId);
+            await this.processWebhookUpdate(update, userId, botToken);
           }
         }
       } catch (err) {
         const desc = err.response?.data?.description || err.message;
         if (desc && desc.includes('Conflict')) {
-          console.warn(`[Telegram Direct] Polling conflict: Another instance or webhook active. Retrying in 15s...`);
-          nextDelay = 15000;
+          console.warn(`[Telegram Direct] Polling conflict detected (previous session ending or webhook active). Retrying deleteWebhook and polling in 2s...`);
+          axios.post(`https://api.telegram.org/bot${botToken}/deleteWebhook`, { drop_pending_updates: false }).catch(() => {});
+          nextDelay = 2000;
         } else {
           console.error('[Telegram Direct] Polling error:', desc);
-          nextDelay = 5000;
+          nextDelay = 4000;
         }
       } finally {
         if (pollingTimers.has(pollingKey)) {

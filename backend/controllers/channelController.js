@@ -73,22 +73,31 @@ export const connectTelegram = async (req, res) => {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: 'Telegram Bot token is required' });
 
+    // Validate bot token with Telegram getMe API
+    const botInfo = await connectTelegramBot(req.user._id, token);
+
     // Encrypt token before saving
     const encryptedToken = encrypt(token);
 
-    // Add channel to OpenClaw
-    await connectTelegramBot(req.user._id, token);
+    // Deactivate any older sessions using this exact same bot token for other users
+    await ChannelSession.updateMany(
+      { channel: 'telegram', botToken: encryptedToken, userId: { $ne: req.user._id } },
+      { connected: false }
+    );
 
-    // Save/Update in DB
+    // Save/Update in DB FIRST so connected: true and correct botUsername are persisted
     const session = await ChannelSession.findOneAndUpdate(
       { userId: req.user._id, channel: 'telegram' },
       {
         botToken: encryptedToken,
         connected: true,
-        botUsername: token.split(':')[0] // Extracted bot ID as fallback username
+        botUsername: botInfo?.username || token.split(':')[0]
       },
       { upsert: true, new: true }
     );
+
+    // Now trigger listeners so polling/webhook starts for the connected session
+    TelegramService.initTelegramListeners().catch(err => console.error('[TG Direct Listener] Init error:', err.message));
 
     res.json({ success: true, channel: session });
   } catch (error) {
