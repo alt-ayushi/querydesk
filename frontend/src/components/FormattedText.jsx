@@ -1,8 +1,59 @@
 import React from 'react';
 
 /**
- * Parses and formats markdown text into clean, styled React components.
- * Eliminates raw markdown syntax markers (**, ###, `, etc.) and renders neat typography.
+ * Cleans and converts LaTeX math syntax into readable mathematical expressions.
+ */
+function formatMathExpression(text) {
+  if (!text) return '';
+  let expr = String(text);
+
+  // Convert fractions: \frac{a}{b} -> (a/b)
+  expr = expr.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '$1/$2');
+  expr = expr.replace(/\\frac([0-9])([0-9])/g, '$1/$2');
+
+  // Convert exponents & superscripts
+  expr = expr.replace(/\^2\b/g, '²');
+  expr = expr.replace(/\^3\b/g, '³');
+  expr = expr.replace(/\^n\b/g, 'ⁿ');
+  expr = expr.replace(/\^x\b/g, 'ˣ');
+
+  // Convert subscripts
+  expr = expr.replace(/_1\b/g, '₁');
+  expr = expr.replace(/_2\b/g, '₂');
+  expr = expr.replace(/_3\b/g, '₃');
+  expr = expr.replace(/_n\b/g, 'ₙ');
+
+  // Common math symbols
+  expr = expr.replace(/\\times\b/g, '×');
+  expr = expr.replace(/\\cdot\b/g, '·');
+  expr = expr.replace(/\\div\b/g, '÷');
+  expr = expr.replace(/\\le\b|\\leq\b/g, '≤');
+  expr = expr.replace(/\\ge\b|\\geq\b/g, '≥');
+  expr = expr.replace(/\\ne\b|\\neq\b/g, '≠');
+  expr = expr.replace(/\\pm\b/g, '±');
+  expr = expr.replace(/\\sqrt\{([^{}]+)\}/g, '√($1)');
+  expr = expr.replace(/\\sqrt\b/g, '√');
+  expr = expr.replace(/\\approx\b/g, '≈');
+  expr = expr.replace(/\\infty\b/g, '∞');
+  expr = expr.replace(/\\degree\b/g, '°');
+
+  // Formatting wrappers
+  expr = expr.replace(/\\text\{([^{}]+)\}/g, '$1');
+  expr = expr.replace(/\\mathbf\{([^{}]+)\}/g, '$1');
+  expr = expr.replace(/\\mathrm\{([^{}]+)\}/g, '$1');
+  expr = expr.replace(/\\left\(/g, '(');
+  expr = expr.replace(/\\right\)/g, ')');
+  expr = expr.replace(/\\left\[/g, '[');
+  expr = expr.replace(/\\right\]/g, ']');
+
+  // Clean backslashes
+  expr = expr.replace(/\\([+\-*=/()])/g, '$1');
+
+  return expr.trim();
+}
+
+/**
+ * Parses and formats markdown text and LaTeX math into clean, styled React components.
  */
 export default function FormattedText({ text, className = '' }) {
   if (!text) return null;
@@ -12,12 +63,35 @@ export default function FormattedText({ text, className = '' }) {
   let inCodeBlock = false;
   let codeBuffer = [];
   let codeLang = '';
+  let inMathBlock = false;
+  let mathBuffer = [];
 
   lines.forEach((line, lineIndex) => {
+    // Math block toggle ($$ or \[ \])
+    if (line.trim() === '$$' || line.trim() === '\\[' || line.trim() === '\\]') {
+      if (inMathBlock) {
+        // Close math block
+        elements.push(
+          <div key={`mathblock-${lineIndex}`} className="my-3 p-3 rounded-xl bg-[#0f172a] border border-cyan-500/40 text-center font-mono text-sm text-cyan-300 shadow-md">
+            {formatMathExpression(mathBuffer.join('\n'))}
+          </div>
+        );
+        mathBuffer = [];
+        inMathBlock = false;
+      } else {
+        inMathBlock = true;
+      }
+      return;
+    }
+
+    if (inMathBlock) {
+      mathBuffer.push(line);
+      return;
+    }
+
     // Code block toggle (```)
     if (line.trim().startsWith('```')) {
       if (inCodeBlock) {
-        // Close code block
         elements.push(
           <div key={`code-${lineIndex}`} className="my-2 rounded-lg bg-zinc-950 border border-zinc-800 p-3 font-mono text-xs text-emerald-400 overflow-x-auto">
             {codeLang && <div className="text-[10px] uppercase tracking-wider text-zinc-500 mb-1 select-none">{codeLang}</div>}
@@ -28,7 +102,6 @@ export default function FormattedText({ text, className = '' }) {
         codeLang = '';
         inCodeBlock = false;
       } else {
-        // Open code block
         inCodeBlock = true;
         codeLang = line.trim().replace(/^```/, '').trim();
       }
@@ -112,17 +185,37 @@ export default function FormattedText({ text, className = '' }) {
 }
 
 /**
- * Parses inline formatting: **bold**, *italic*, `code`, and [links](url)
+ * Parses inline formatting: **bold**, *italic*, `code`, math ($...$ or \(...\)), and [links](url)
  */
 function parseInlineMarkdown(text) {
   if (!text) return '';
 
-  // Tokenize string for inline styles
-  const regex = /(\*\*.*?\*\*|\*.*?\*|`.*?`|\[.*?\]\(.*?\))/g;
+  // Tokenize string for inline styles including inline math ($...$ or \(...\))
+  const regex = /(\$\$[\s\S]*?\$\$|\\\[[\s\S]*?\\\]|\\\(.*?\\\)|\\\$[^\$\n]+\\\$|\$[^$\n]+\$|\*\*.*?\*\*|\*.*?\*|`.*?`|\[.*?\]\(.*?\))/g;
   const parts = text.split(regex);
 
   return parts.map((part, index) => {
     if (!part) return null;
+
+    // Display / Block Math ($$ ... $$ or \[ ... \])
+    if ((part.startsWith('$$') && part.endsWith('$$')) || (part.startsWith('\\[') && part.endsWith('\\]'))) {
+      const inner = part.startsWith('$$') ? part.slice(2, -2) : part.slice(2, -2);
+      return (
+        <span key={index} className="block my-2 p-2.5 rounded-xl bg-[#0f172a] border border-cyan-500/40 text-center font-mono text-sm text-cyan-300 shadow-md">
+          {formatMathExpression(inner)}
+        </span>
+      );
+    }
+
+    // Inline Math ($ ... $ or \( ... \))
+    if ((part.startsWith('$') && part.endsWith('$') && part.length > 2) || (part.startsWith('\\(') && part.endsWith('\\)'))) {
+      const inner = part.startsWith('$') ? part.slice(1, -1) : part.slice(2, -2);
+      return (
+        <span key={index} className="inline-block px-1.5 py-0.5 mx-0.5 rounded bg-cyan-950/60 border border-cyan-700/50 font-mono text-xs text-cyan-300 font-semibold">
+          {formatMathExpression(inner)}
+        </span>
+      );
+    }
 
     // Bold (**text**)
     if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
@@ -170,3 +263,4 @@ function parseInlineMarkdown(text) {
     return part;
   });
 }
+

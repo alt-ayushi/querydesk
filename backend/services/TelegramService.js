@@ -376,7 +376,55 @@ class TelegramService {
     const contactName = (baseContactName && cleanBotUser) ? `${baseContactName} (@${cleanBotUser})` : baseContactName;
 
     // Process Telegram Media vs Text (Additive)
-    if (msg.photo && Array.isArray(msg.photo) && msg.photo.length > 0) {
+    if (msg.document) {
+      console.log(`[Telegram Direct] Processing document upload from ${contactName} (${peerId}): ${msg.document.file_name}`);
+      let fileBuffer = null;
+      try {
+        if (botToken && msg.document.file_id) {
+          const fileRes = await axios.get(`https://api.telegram.org/bot${botToken}/getFile`, {
+            params: { file_id: msg.document.file_id },
+            timeout: 10000
+          });
+          if (fileRes.data && fileRes.data.ok && fileRes.data.result?.file_path) {
+            const downloadUrl = `https://api.telegram.org/file/bot${botToken}/${fileRes.data.result.file_path}`;
+            const docRes = await axios.get(downloadUrl, { responseType: 'arraybuffer', timeout: 20000 });
+            fileBuffer = Buffer.from(docRes.data);
+          }
+        }
+      } catch (dErr) {
+        console.error('[Telegram Document Download Error]:', dErr.message);
+      }
+
+      const docTitle = msg.document.file_name || 'Telegram_Document.pdf';
+      const caption = msg.caption || `Summarize and explain ${docTitle}`;
+
+      if (fileBuffer && resolvedUserId) {
+        try {
+          const { ingestDocument } = await import('./documentService.js');
+          await ingestDocument({
+            userId: resolvedUserId,
+            title: docTitle,
+            originalName: docTitle,
+            fileType: 'pdf',
+            fileBuffer
+          });
+          console.log(`[Telegram Ingestion] Document "${docTitle}" ingested successfully.`);
+        } catch (iErr) {
+          console.error('[Telegram Ingestion Error]:', iErr.message);
+        }
+      }
+
+      return await this.handleIncomingMessage(
+        peerId,
+        caption,
+        providerMessageId,
+        timestamp,
+        contactName,
+        true,
+        resolvedUserId,
+        botToken
+      );
+    } else if (msg.photo && Array.isArray(msg.photo) && msg.photo.length > 0) {
       const caption = msg.caption || '';
       return await this.handleIncomingPhotoMessage(
         peerId,

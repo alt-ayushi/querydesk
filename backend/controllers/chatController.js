@@ -136,13 +136,35 @@ export const handleWebChat = async (req, res) => {
       text: h.text || h.message || ''
     }));
 
+    // ── Additive Multimodal RAG Context Injection (Fault tolerant fallback) ──
+    let visualSources = [];
+    try {
+      const { isConversationalMessage } = await import('../services/aiService.js');
+      if (message && !isConversationalMessage(message)) {
+        const { retrieveMultimodalContext } = await import('../services/retrievalService.js');
+        const ragContext = await retrieveMultimodalContext(message, req.user._id);
+        if (ragContext && ragContext.fullPromptContext && ragContext.fullPromptContext.trim()) {
+          visualSources = ragContext.visualSources || [];
+          const lastUserIdx = history.findLastIndex(h => h.role === 'user');
+          const ragPrompt = `${message}\n\n[MULTIMODAL KNOWLEDGE BASE CONTEXT]:${ragContext.fullPromptContext}\nInstructions: Answer the query accurately using the above text and visual context. Cite document title and page number for visual evidence where relevant.`;
+          if (lastUserIdx !== -1) {
+            history[lastUserIdx].text = ragPrompt;
+          } else {
+            history.push({ role: 'user', text: ragPrompt });
+          }
+        }
+      }
+    } catch (ragErr) {
+      console.warn('[WebChat] Multimodal RAG retrieval fallback:', ragErr.message);
+    }
+
     // SSE stream response
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
     console.log('[Flow] Sending Reply');
-    res.write(`data: ${JSON.stringify({ conversationId: conversation._id, userMessage: userMsg })}\n\n`);
+    res.write(`data: ${JSON.stringify({ conversationId: conversation._id, userMessage: userMsg, visualSources })}\n\n`);
 
     let fullReply = '';
 

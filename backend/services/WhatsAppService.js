@@ -289,6 +289,96 @@ class WhatsAppService {
 
     return savedMsg;
   }
+
+  // ── Inbound WhatsApp Document/PDF → Multimodal AI ───────────────────────────
+  async handleIncomingDocumentMessage(peerId, docTitle, text, providerMessageId, timestamp, contactName = '', isUser = true, userId = null, isFromMe = false) {
+    const io = getSocketIO();
+    console.log(`[WhatsApp Direct] Incoming Document "${docTitle}" from ${peerId}: "${text.slice(0, 80)}" for user ${userId}`);
+
+    const sessionQuery = userId ? { userId, channel: 'whatsapp' } : { channel: 'whatsapp', connected: true };
+    const activeSession = await ChannelSession.findOne(sessionQuery);
+    const allowedPhone = (activeSession && activeSession.phoneNumber && activeSession.phoneNumber !== 'null')
+      ? activeSession.phoneNumber
+      : process.env.WHATSAPP_ALLOWED_NUMBER;
+
+    const normalizedAllowed = normalizePhoneNumber(allowedPhone);
+    const normalizedTarget = normalizePhoneNumber(peerId);
+
+    const isSelfTarget = Boolean(
+      (normalizedAllowed && normalizedTarget && normalizedTarget === normalizedAllowed) ||
+      (allowedPhone && String(peerId).includes(allowedPhone)) ||
+      (normalizedAllowed && String(peerId).includes(normalizedAllowed))
+    );
+
+    if (normalizedAllowed && !isSelfTarget) {
+      console.log(`[WhatsApp Direct] Ignored document message from non-self chat target: ${peerId}`);
+      return null;
+    }
+
+    if (normalizedAllowed) {
+      peerId = activeSession?.phoneNumber || allowedPhone;
+    }
+
+    const conversation = await ConversationService.getOrCreateConversation({
+      channel: 'whatsapp',
+      peerId,
+      userId,
+      contactData: { name: contactName }
+    });
+
+    const finalUserId = userId || conversation.userId;
+
+    if (providerMessageId) {
+      const existing = await MessageRepository.findByProviderMessageId(String(providerMessageId));
+      if (existing) return existing;
+    }
+
+    const prompt = text || `Summarize and explain ${docTitle}`;
+    const savedMsg = await MessageRepository.create({
+      userId: finalUserId,
+      conversationId: conversation._id,
+      contactId: conversation.contactId,
+      channel: 'whatsapp',
+      role: isUser ? 'user' : 'assistant',
+      direction: isUser ? 'inbound' : 'outbound',
+      messageType: 'document',
+      fileName: docTitle,
+      text: prompt,
+      status: isUser ? 'delivered' : 'sent',
+      timestamp: timestamp ? new Date(timestamp) : new Date(),
+      providerMessageId: providerMessageId ? String(providerMessageId) : undefined
+    });
+
+    await ConversationService.updateConversationDetails(conversation._id, `📄 ${docTitle}: ${prompt}`, isUser ? 1 : 0);
+
+    if (io) io.to(`user_${finalUserId}`).emit('message:new', savedMsg);
+
+    if (isUser) {
+      (async () => {
+        try {
+          if (io) io.to(`user_${finalUserId}`).emit('typing:start', { conversationId: conversation._id });
+
+          const { generateAIResponseForConversation } = await import('./aiService.js');
+          const aiResponse = await generateAIResponseForConversation({
+            conversationId: conversation._id,
+            userId: finalUserId
+          });
+
+          if (aiResponse) {
+            console.log(`[WhatsApp Direct] Document AI response generated: "${aiResponse.slice(0, 50)}..."`);
+            await this.sendMessage(peerId, aiResponse, conversation._id, finalUserId);
+          }
+        } catch (err) {
+          console.error('[WhatsApp Direct] Document AI error:', err.message);
+          await this.sendMessage(peerId, "I couldn't process that document. Please try again.", conversation._id, finalUserId);
+        } finally {
+          if (io) io.to(`user_${finalUserId}`).emit('typing:stop', { conversationId: conversation._id });
+        }
+      })();
+    }
+
+    return savedMsg;
+  }
 }
 
 export default new WhatsAppService();

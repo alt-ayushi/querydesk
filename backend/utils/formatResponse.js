@@ -9,18 +9,14 @@ export function sanitizeLaTeXAndMath(text) {
 
   let cleaned = String(text);
 
-  // 1. Remove raw LaTeX block and inline delimiters: \[\], \(\), $$, $
-  cleaned = cleaned.replace(/\\\[\s*/g, '\n');
-  cleaned = cleaned.replace(/\s*\\\]/g, '\n');
-  cleaned = cleaned.replace(/\\\(\s*/g, '');
-  cleaned = cleaned.replace(/\s*\\\)/g, '');
-  cleaned = cleaned.replace(/\$\$\s*/g, '\n');
-  cleaned = cleaned.replace(/\s*\$\$/g, '\n');
-  cleaned = cleaned.replace(/\$([^$\n]+)\$/g, '$1');
-
-  // 2. Convert common LaTeX fractions: \frac{a}{b} -> a/b or \frac12 -> 1/2
+  // 1. Convert common LaTeX fractions: \frac{a}{b} -> (a/b)
   cleaned = cleaned.replace(/\\frac\{([^{}]+)\}\{([^{}]+)\}/g, '$1/$2');
   cleaned = cleaned.replace(/\\frac([0-9])([0-9])/g, '$1/$2');
+
+  // 2. Convert common exponents & superscripts (e.g. x^2 -> x², x^3 -> x³)
+  cleaned = cleaned.replace(/\^2\b/g, '²');
+  cleaned = cleaned.replace(/\^3\b/g, '³');
+  cleaned = cleaned.replace(/\^n\b/g, 'ⁿ');
 
   // 3. Convert explicit common LaTeX math commands to plain Unicode
   cleaned = cleaned.replace(/\\times\b/g, '×');
@@ -45,17 +41,17 @@ export function sanitizeLaTeXAndMath(text) {
   cleaned = cleaned.replace(/\\left\[/g, '[');
   cleaned = cleaned.replace(/\\right\]/g, ']');
 
-  // Clean remaining double-escaped operators while leaving unrecognized commands intact
+  // Remove LaTeX delimiters for plain text outputs: \[\], \(\), $$, $
+  cleaned = cleaned.replace(/\\\[\s*/g, '');
+  cleaned = cleaned.replace(/\s*\\\]/g, '');
+  cleaned = cleaned.replace(/\\\(\s*/g, '');
+  cleaned = cleaned.replace(/\s*\\\)/g, '');
+  cleaned = cleaned.replace(/\$\$\s*/g, '');
+  cleaned = cleaned.replace(/\s*\$\$/g, '');
+  cleaned = cleaned.replace(/\$([^$\n]+)\$/g, '$1');
+
+  // Clean remaining double-escaped operators
   cleaned = cleaned.replace(/\\([+\-*=/()])/g, '$1');
-
-  // 4. Convert option lists (A. , B. , C.) or dash bullets to clean •
-  cleaned = cleaned.replace(/^[ \t]*[A-Z]\.[ \t]+/gm, '• ');
-  cleaned = cleaned.replace(/^[ \t]*[\-\*][ \t]+/gm, '• ');
-
-  // 5. Remove dividers & clean up spacing
-  cleaned = cleaned.replace(/^[\s\*\-\=_]{3,}$/gm, '');
-  cleaned = cleaned.replace(/^#*\s*Equations\s*$/gmi, '');
-  cleaned = cleaned.replace(/^#{1,6}\s*/gm, '');
 
   cleaned = cleaned.replace(/[ \t]+/g, ' ');
   cleaned = cleaned.replace(/\n{3,}/g, '\n\n');
@@ -72,15 +68,22 @@ export function sanitizeLaTeXAndMath(text) {
 export function formatAIResponse(rawText, channel = 'web') {
   if (!rawText) return '';
 
+  if (channel === 'web') {
+    // Web Chat: Keep LaTeX delimiters and Markdown structures intact for React FormattedText rendering
+    let text = String(rawText);
+    // Normalize \( ... \) -> $ ... $ and \[ ... \] -> $$ ... $$
+    text = text.replace(/\\\[\s*([\s\S]*?)\s*\\\]/g, '\n$$\n$1\n$$\n');
+    text = text.replace(/\\\(\s*([\s\S]*?)\s*\\\)/g, '$$1$');
+    text = text.replace(/\n{3,}/g, '\n\n');
+    return text.trim();
+  }
+
   let text = sanitizeLaTeXAndMath(rawText);
 
   if (channel === 'whatsapp') {
-    // WhatsApp bolding strategy: limit bolding to major section headers only
-    text = text.replace(/\*\*\*([^*]+)\*\*\*/g, '$1');
-    text = text.replace(/\*\*([^*]+)\*\*/g, '$1');
-
-    // Bold major structural headers only
-    text = text.replace(/^(Solution|Given|Given:|Step \d+:?|Answer|Answer:?)$/gm, '*$1*');
+    // WhatsApp formatting: bold major headers, bullet points
+    text = text.replace(/\*\*\*([^*]+)\*\*\*/g, '*$1*');
+    text = text.replace(/\*\*([^*]+)\*\*/g, '*$1*');
 
     // Standardize bullets
     text = text.replace(/^[ \t]*[\-\*][ \t]+/gm, '• ');
@@ -91,23 +94,13 @@ export function formatAIResponse(rawText, channel = 'web') {
 
   if (channel === 'telegram') {
     // Telegram formatting: safe bold headers, clean bullets
-    text = text.replace(/\*\*\*([^*]+)\*\*\*/g, '$1');
-    text = text.replace(/\*\*([^*]+)\*\*/g, '$1');
-
-    text = text.replace(/^(Solution|Given|Given:|Step \d+:?|Answer|Answer:?)$/gm, '*$1*');
+    text = text.replace(/\*\*\*([^*]+)\*\*\*/g, '*$1*');
+    text = text.replace(/\*\*([^*]+)\*\*/g, '*$1*');
     text = text.replace(/^[ \t]*[\-\*][ \t]+/gm, '• ');
-
-    // Safely remove any unescaped loose backslashes that might trigger Telegram syntax error
-    text = text.replace(/\\/g, '');
 
     text = text.replace(/\n{3,}/g, '\n\n');
     return text.trim();
   }
-
-  // Web Chat Formatting
-  text = text.replace(/\*\*\*([^*]+)\*\*\*/g, '**$1**');
-  text = text.replace(/^[ \t]*[\-\*][ \t]+/gm, '• ');
-  text = text.replace(/\n{3,}/g, '\n\n');
 
   return text.trim();
 }

@@ -83,7 +83,7 @@ export async function generateAIResponse(history, sessionKey = 'agent:maya:defau
 
   const systemPrompt = {
     role: 'system',
-    content: 'You are Maya, an intelligent AI assistant. Always respond dynamically and contextually to the user\'s message without repeating generic canned greetings.'
+    content: 'You are Maya, an intelligent AI assistant for QueryDesk. Provide warm, concise, and direct responses. For simple conversational messages (e.g., greetings, goodnights, thank-yous), respond in a friendly 1-2 sentence reply without dumping long technical document summaries.'
   };
 
   const messages = [
@@ -209,6 +209,39 @@ export async function generateAIResponseStream(history, sessionKey = 'agent:maya
 }
 
 /**
+ * Detects if a message is a simple greeting, farewell, or short conversational phrase that does NOT require document RAG retrieval.
+ * @param {string} text 
+ * @returns {boolean}
+ */
+export function isConversationalMessage(text) {
+  if (!text || typeof text !== 'string') return true;
+  const clean = text.trim().toLowerCase().replace(/[^a-z0-9\s]/g, '');
+  if (!clean || clean.length <= 1) return true;
+
+  const greetingsAndFarewells = [
+    'hi', 'hello', 'hey', 'heyy', 'heyyy', 'hiii', 'helloo',
+    'yo', 'yoo', 'yooo', 'sup',
+    'good night', 'goodnight', 'gn', 'byee', 'bye', 'good bye', 'goodbye',
+    'good morning', 'good afternoon', 'good evening',
+    'thanks', 'thank you', 'thx', 'thanku', 'ty',
+    'ok', 'okay', 'kk', 'alright', 'cool', 'sure',
+    'how are you', 'what is your name', 'who are you',
+    'sweet dreams', 'see ya', 'see you'
+  ];
+
+  const words = clean.split(/\s+/);
+  if (words.length <= 4) {
+    if (greetingsAndFarewells.some(g => clean === g || clean.startsWith(g) || clean.endsWith(g))) {
+      const questionKeywords = ['what', 'why', 'how', 'where', 'when', 'who', 'explain', 'code', 'file', 'doc', 'pdf', 'diagram', 'chart', 'summary', 'table', 'tell', 'show', 'search', 'find', 'process'];
+      const hasQuestion = questionKeywords.some(q => clean.includes(q));
+      if (!hasQuestion) return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Channel-agnostic AI response generator for a conversation.
  * Loads history from MongoDB Message model, formats messages, and executes Mistral completion.
  * Returns the assistant reply string (without performing messaging transport delivery).
@@ -229,6 +262,25 @@ export async function generateAIResponseForConversation({ conversationId, userId
     role: h.role,
     text: h.text || h.message || ''
   }));
+
+  // ── Multimodal RAG Context Retrieval for all channels (WhatsApp, Telegram, Web) ──
+  const lastUserLog = [...historyLogs].reverse().find(h => h.role === 'user');
+  if (lastUserLog && lastUserLog.text && !isConversationalMessage(lastUserLog.text)) {
+    try {
+      const { retrieveMultimodalContext } = await import('./retrievalService.js');
+      const ragContext = await retrieveMultimodalContext(lastUserLog.text, userId);
+      
+      if (ragContext && ragContext.fullPromptContext && ragContext.fullPromptContext.trim()) {
+        const lastHistIdx = history.findLastIndex(h => h.role === 'user');
+        const ragPrompt = `${lastUserLog.text}\n\n[MULTIMODAL KNOWLEDGE BASE CONTEXT]:${ragContext.fullPromptContext}\nInstructions: Answer accurately using the above text and visual context (diagrams, charts, tables). Cite document title and page number resources for visual evidence (e.g. 📄 Source: Document.pdf, Page X).`;
+        if (lastHistIdx !== -1) {
+          history[lastHistIdx].text = ragPrompt;
+        }
+      }
+    } catch (ragErr) {
+      console.warn('[MultimodalRAG Channel] Retrieval fallback:', ragErr.message);
+    }
+  }
 
   return await generateAIResponse(history);
 }
@@ -325,7 +377,7 @@ export async function generateVisionAIResponse(history = [], imageBase64, prompt
 
   const systemPrompt = {
     role: 'system',
-    content: 'You are Maya, an intelligent AI assistant capable of analyzing images. Provide clear, helpful, accurate, and detailed descriptions or answers based on the image provided.'
+    content: 'You are Maya, an intelligent AI assistant. Provide clean, concise, precise, and directly relevant answers for the uploaded image. Focus directly on what is asked or shown in the image without referencing unrelated documents.'
   };
 
   const formattedHistory = history.map(h => ({
@@ -397,7 +449,25 @@ export async function generateVisionAIResponseForConversation({ conversationId, 
     text: h.text || h.message || ''
   }));
 
-  return await generateVisionAIResponse(history, imageBase64, prompt);
+  // ── Image -> Text/Visual Cross-Modal Knowledge Retrieval (Only when explicitly relevant) ──
+  let augmentedPrompt = prompt || 'Describe and analyze this image or diagram.';
+  const lowerPrompt = (prompt || '').toLowerCase();
+  const needsDocumentRAG = lowerPrompt.includes('document') || lowerPrompt.includes('pdf') || lowerPrompt.includes('file') || lowerPrompt.includes('context') || lowerPrompt.includes('knowledge base') || lowerPrompt.includes('compare');
+
+  if (needsDocumentRAG) {
+    try {
+      const { retrieveMultimodalContext } = await import('./retrievalService.js');
+      const ragContext = await retrieveMultimodalContext(prompt, userId);
+
+      if (ragContext && ragContext.fullPromptContext && ragContext.fullPromptContext.trim()) {
+        augmentedPrompt = `${augmentedPrompt}\n\n[RELATED DOCUMENT KNOWLEDGE BASE CONTEXT]:${ragContext.fullPromptContext}\nInstructions: Connect the visual details of this image with the above document context. Include source document title and page number citations when referencing document knowledge.`;
+      }
+    } catch (ragErr) {
+      console.warn('[MultimodalRAG Vision Channel] Retrieval fallback:', ragErr.message);
+    }
+  }
+
+  return await generateVisionAIResponse(history, imageBase64, augmentedPrompt);
 }
 
 

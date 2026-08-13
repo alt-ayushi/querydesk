@@ -18,6 +18,17 @@ import {
 } from '../controllers/channelController.js';
 import { getStatus } from '../controllers/settingController.js';
 import { getMedia } from '../controllers/mediaController.js';
+import {
+  uploadMiddleware,
+  uploadDocument,
+  getDocuments,
+  getDocumentById,
+  deleteDocument,
+  triggerVisualProcess,
+  getDocumentVisuals,
+  handleMultimodalRetrieval,
+  handleMultimodalChat
+} from '../controllers/documentController.js';
 import { protect } from '../middleware/auth.js';
 
 const router = express.Router();
@@ -35,6 +46,16 @@ router.get('/messages/:conversationId', protect, getMessages);
 router.post('/chat', protect, handleWebChat);
 router.patch('/conversations/:conversationId', protect, renameConversation);
 router.delete('/conversations/:conversationId', protect, deleteConversation);
+
+// ── Documents & Multimodal RAG (Protected) ──────────────────────────────────
+router.post('/documents/upload', protect, uploadMiddleware, uploadDocument);
+router.get('/documents', protect, getDocuments);
+router.get('/documents/:id', protect, getDocumentById);
+router.delete('/documents/:id', protect, deleteDocument);
+router.post('/documents/:id/visual-process', protect, triggerVisualProcess);
+router.get('/documents/:id/visuals', protect, getDocumentVisuals);
+router.post('/retrieval/multimodal', protect, handleMultimodalRetrieval);
+router.post('/chat/multimodal', protect, handleMultimodalChat);
 
 // ── Channel Status & Send (Protected) ────────────────────────────────────────
 router.get('/channels/status', protect, getChannelsStatus);

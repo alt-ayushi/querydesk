@@ -44,6 +44,9 @@ const messageSchema = new mongoose.Schema({
   imageUrl: {
     type: String
   },
+  fileName: {
+    type: String
+  },
   status: {
     type: String,
     enum: ['pending', 'sent', 'delivered', 'read', 'failed'],

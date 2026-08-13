@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, User, Bot, CornerDownLeft, Sparkles, Loader2, Paperclip, X, Image as ImageIcon } from 'lucide-react';
+import { Send, User, Bot, CornerDownLeft, Sparkles, Loader2, Paperclip, X, Image as ImageIcon, FileText } from 'lucide-react';
 import MediaAttachment from './MediaAttachment';
 
 function WebChat({
@@ -197,6 +197,9 @@ function WebChat({
                   lastMessageAt: new Date()
                 });
               }
+              if (parsed.visualSources && parsed.visualSources.length > 0) {
+                tempAssistantMsg.visualSources = parsed.visualSources;
+              }
             } else if (parsed.chunk) {
               tempAssistantMsg.text = (tempAssistantMsg.text || '') + parsed.chunk;
               setMessages(prev => prev.map(m => m._id === tempAssistantMsg._id ? { ...tempAssistantMsg } : m));
@@ -295,7 +298,43 @@ function WebChat({
                         />
                       </div>
                     )}
+
+                    {/* Render Document Attachment Card if present */}
+                    {(msg.fileName || msg.messageType === 'document') && (
+                      <div className="mb-2 flex items-center gap-3 p-2.5 rounded-xl bg-black/20 border border-white/10 text-white">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-red-500/30 text-red-300">
+                          <FileText className="h-5 w-5" />
+                        </div>
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-xs font-bold truncate">{msg.fileName || 'Document Attachment'}</span>
+                          <span className="text-[10px] text-zinc-300">PDF Document</span>
+                        </div>
+                      </div>
+                    )}
                     <MediaAttachment text={msg.text || msg.message} backendUrl={backendUrl} token={token} />
+
+                    {/* Render Visual Evidence Cards if present */}
+                    {msg.visualSources && msg.visualSources.length > 0 && (
+                      <div className="mt-3 p-2.5 rounded-xl bg-[#141416] border border-emerald-800/50 space-y-2">
+                        <div className="flex items-center gap-1.5 text-[10px] font-bold text-emerald-400 uppercase tracking-wider">
+                          <Sparkles className="h-3 w-3" /> Visual Source Evidence
+                        </div>
+                        <div className="grid grid-cols-1 gap-2">
+                          {msg.visualSources.map((vSrc, vIdx) => (
+                            <div key={vIdx} className="flex flex-col p-2 bg-[#1b1b1e] border border-[#27272a] rounded-lg text-xs space-y-1">
+                              {vSrc.imageUrl && (
+                                <img src={vSrc.imageUrl} alt={vSrc.documentTitle} className="h-36 w-full object-contain rounded bg-[#0d0d0e]" />
+                              )}
+                              <div className="flex items-center justify-between text-[10px] text-zinc-400 pt-1">
+                                <span className="font-semibold text-zinc-200 truncate">{vSrc.documentTitle}</span>
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-950 text-emerald-300 font-mono">Page {vSrc.pageNumber}</span>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
                     <span className={`text-[9px] mt-1.5 self-end ${isAssistant ? 'text-zinc-500' : 'text-[#e6fcf5]'}`}>
                       {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </span>

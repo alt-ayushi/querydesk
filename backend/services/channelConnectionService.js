@@ -262,7 +262,58 @@ export async function startWhatsAppLogin(userId) {
           continue;
         }
 
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
+        // 4. Handle WhatsApp Document / PDF Message
+        const docMsg = msg.message.documentMessage || msg.message.documentWithCaptionMessage?.message?.documentMessage;
+        if (docMsg) {
+          console.log(`[FILTER ACCEPTED]: WhatsApp document message from ${peerId}. Downloading document...`);
+          let fileBuffer = null;
+          try {
+            const { downloadMediaMessage } = await import('@whiskeysockets/baileys');
+            fileBuffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: console, reconnect: async () => sock });
+          } catch (err) {
+            console.error('[WA Document Download Error]:', err.message);
+          }
+
+          const docTitle = docMsg.fileName || 'WhatsApp_Document.pdf';
+          const caption = docMsg.caption || msg.message.extendedTextMessage?.text || `Summarize and explain ${docTitle}`;
+
+          if (fileBuffer && userId) {
+            try {
+              const { ingestDocument } = await import('./documentService.js');
+              await ingestDocument({
+                userId,
+                title: docTitle,
+                originalName: docTitle,
+                fileType: 'pdf',
+                fileBuffer
+              });
+              console.log(`[WhatsApp Ingestion] Document "${docTitle}" ingested successfully.`);
+            } catch (ingestErr) {
+              console.error('[WhatsApp Ingestion Error]:', ingestErr.message);
+            }
+          }
+
+          await WhatsAppService.handleIncomingDocumentMessage(
+            ownerPhone || userIdBase || peerId,
+            docTitle,
+            caption,
+            msg.key.id,
+            msg.messageTimestamp ? msg.messageTimestamp * 1000 : Date.now(),
+            pushName || 'Self',
+            true,
+            userId,
+            isFromMe
+          );
+          continue;
+        }
+
+        const text = 
+          msg.message.conversation || 
+          msg.message.extendedTextMessage?.text || 
+          msg.message.imageMessage?.caption || 
+          docMsg?.caption || 
+          '';
+
         if (!text) {
           console.log(`[FILTER REJECTED]: Message has no plain text content (media/system).`);
           continue;

@@ -8,8 +8,10 @@ import {
   Search,
   Edit3,
   Trash2,
-  Settings
+  Settings,
+  Layers
 } from 'lucide-react';
+import DocumentModal from './DocumentModal';
 
 function Sidebar({
   activeView,
@@ -22,6 +24,7 @@ function Sidebar({
   backendUrl
 }) {
   const [searchQuery, setSearchQuery] = useState('');
+  const [isDocModalOpen, setIsDocModalOpen] = useState(false);
 
   const filteredConversations = conversations.filter(conv => {
     const matchesChannel = conv.channel === activeView;
@@ -235,7 +238,14 @@ function Sidebar({
       </div>
 
       {/* Footer */}
-      <div className="p-3 border-t border-[#2d2d2d] bg-[#0d0d0d] flex flex-col gap-1">
+      <div className="p-3 border-t border-[#2d2d2d] bg-[#0d0d0d] flex flex-col gap-2">
+        <button
+          onClick={() => setIsDocModalOpen(true)}
+          className="flex items-center gap-3 w-full p-2.5 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-emerald-600 to-teal-700 hover:brightness-110 transition duration-150 shadow-md shadow-emerald-950/40"
+        >
+          <Layers className="h-4 w-4" /> Documents & Knowledge
+        </button>
+
         <button
           onClick={() => {
             setActiveView('settings');
@@ -250,6 +260,13 @@ function Sidebar({
           <Settings className="h-4 w-4" /> Channel Settings
         </button>
       </div>
+
+      <DocumentModal
+        isOpen={isDocModalOpen}
+        onClose={() => setIsDocModalOpen(false)}
+        token={token}
+        backendUrl={backendUrl}
+      />
     </div>
   );
 }

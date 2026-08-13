@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Phone, Send, User, AlertCircle, Check, CheckCheck, Clock } from 'lucide-react';
+import { Phone, Send, User, AlertCircle, Check, CheckCheck, Clock, FileText } from 'lucide-react';
 import MediaAttachment from './MediaAttachment';
 
 // Message delivery status indicator
@@ -139,6 +139,29 @@ function WhatsAppChat({
                         : 'bg-[#005c4b] text-white rounded-tr-none'
                       : 'bg-[#202c33] text-zinc-100 rounded-tl-none'
                   }`}>
+                    {/* Render Image Attachment if present */}
+                    {msg.imageUrl && (
+                      <div className="mb-2 overflow-hidden rounded-xl border border-black/20">
+                        <img 
+                          src={msg.imageUrl} 
+                          alt="Uploaded attachment" 
+                          className="max-h-64 max-w-full object-contain rounded-lg"
+                        />
+                      </div>
+                    )}
+
+                    {/* Render Document Attachment Card if present */}
+                    {(msg.fileName || msg.messageType === 'document') && (
+                      <div className="mb-2 flex items-center gap-3 p-2.5 rounded-xl bg-black/20 border border-white/10 text-white">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-red-500/30 text-red-300">
+                          <FileText className="h-5 w-5" />
+                        </div>
+                        <div className="flex flex-col min-w-0">
+                          <span className="text-xs font-bold truncate">{msg.fileName || 'Document Attachment'}</span>
+                          <span className="text-[10px] text-zinc-300">PDF Document</span>
+                        </div>
+                      </div>
+                    )}
                     <MediaAttachment text={getMsgText(msg)} backendUrl={backendUrl} token={token} />
                     <div className="flex items-center justify-end gap-1 mt-1">
                       {isFailed && (
